@@ -1,0 +1,53 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator
+  namespace: data-pipeline
+  labels:
+    app: simulator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: simulator
+  template:
+    metadata:
+      labels:
+        app: simulator
+    spec:
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-broker 29092; do
+                echo "Waiting for Kafka..."; sleep 3;
+              done
+              echo "Kafka is up!"
+      containers:
+        - name: simulator
+          image: machine-simulator:latest
+          imagePullPolicy: Never
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-broker:29092"
+            - name: KAFKA_TOPIC
+              value: "sensor-topic"
+            - name: NUM_MACHINES
+              value: "10"
+            - name: SEND_INTERVAL_SEC
+              value: "2"
+            - name: MACHINE_PREFIX
+              value: "MC"
+            - name: LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
