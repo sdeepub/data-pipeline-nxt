@@ -1,0 +1,263 @@
+version: "3.8"
+
+# ─── Shared environment for all services ────────────────────────────────────
+x-kafka-env: &kafka-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  KAFKA_TOPIC: sensor-topic
+  KAFKA_DEAD_LETTER_TOPIC: sensor-topic-dlq
+
+x-iotdb-env: &iotdb-env
+  IOTDB_HOST: iotdb
+  IOTDB_PORT: "6667"
+  IOTDB_USER: root
+  IOTDB_PASSWORD: root
+  IOTDB_STORAGE_GROUP: root.factory1
+
+# ─── Services ────────────────────────────────────────────────────────────────
+services:
+
+  # ── Zookeeper ───────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: echo ruok | nc localhost 2181
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Kafka ────────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"    # external (host → kafka)
+      - "29092:29092"  # internal (container → container)
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_RETENTION_BYTES: 1073741824   # 1 GB cap
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: kafka-topics --bootstrap-server localhost:29092 --list
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── IoTDB ────────────────────────────────────────────────────────────────────
+  iotdb:
+    image: apache/iotdb:1.3.0-standalone
+    container_name: iotdb
+    restart: unless-stopped
+    ports:
+      - "6667:6667"   # client (CLI / JDBC / Python SDK)
+      - "8080:8080"   # REST API (used by Grafana plugin)
+    environment:
+      - enable_rest_service=true
+      - rest_service_port=8080
+    volumes:
+      - iotdb-data:/iotdb/data
+      - iotdb-logs:/iotdb/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ping"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Flink JobManager ──────────────────────────────────────────────────────────
+  # ✅ FIXED: Added explicit build: directive
+  flink-jobmanager:
+    build:
+      context: ./flink-java
+      dockerfile: Dockerfile
+    image: flink-iotdb:latest
+    container_name: flink-jobmanager
+    restart: unless-stopped
+    command: jobmanager
+    ports:
+      - "8081:8081"   # Flink Web UI
+      - "6123:6123"   # RPC
+    volumes:
+      - /tmp/flink-checkpoints:/tmp/flink-checkpoints
+      - /tmp/flink-savepoints:/tmp/flink-savepoints
+    environment:
+      <<: [*kafka-env, *iotdb-env]
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        parallelism.default: 4
+        rest.bind-address: 0.0.0.0
+        state.backend: hashmap
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+        execution.checkpointing.interval: 60s
+    depends_on:
+      kafka:
+        condition: service_healthy
+      iotdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/v1/overview"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Flink TaskManager ──────────────────────────────────────────────────────────
+  # ✅ FIXED: Removed deploy.replicas (use --scale flag instead)
+  # Scale with: docker compose up --scale flink-taskmanager=2
+  flink-taskmanager:
+    build:
+      context: ./flink-java
+      dockerfile: Dockerfile
+    image: flink-iotdb:latest
+    restart: unless-stopped
+    command: taskmanager
+    volumes:
+      - /tmp/flink-checkpoints:/tmp/flink-checkpoints
+      - /tmp/flink-savepoints:/tmp/flink-savepoints
+    environment:
+      <<: [*kafka-env, *iotdb-env]
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        parallelism.default: 4
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 1024m
+        state.backend: hashmap
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "taskmanager"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Flink Job Submitter ──────────────────────────────────────────────────────
+  flink-job:
+    build:
+      context: ./flink-java
+      dockerfile: Dockerfile
+    image: flink-iotdb:latest
+    container_name: flink-job
+    restart: on-failure
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "Waiting for JobManager..."
+        for attempt in  $(seq 1 60); do
+          if curl -s http://flink-jobmanager:8081/v1/overview > /dev/null 2>&1; then
+            echo "JobManager is ready! Submitting job..."
+            flink run -m flink-jobmanager:8081 \
+              --jarfile /opt/flink/usrlib/kafka-iotdb-pipeline.jar \
+              -c com.iotdb.flink.KafkaToIoTDB \
+              --classpath file:///path/to/downloaded/flink-sql-connector-kafka.jar
+            echo "Job submitted successfully!"
+            sleep infinity
+          else
+            echo "Attempt $attempt/60: Waiting for JobManager..."
+            sleep 1
+          fi
+        done
+        echo "ERROR: JobManager never became healthy!"
+        exit 1
+    volumes:
+      - /tmp/flink-checkpoints:/tmp/flink-checkpoints
+      - /tmp/flink-savepoints:/tmp/flink-savepoints
+    environment:
+      <<: [*kafka-env, *iotdb-env]
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+
+  # ── Machine Simulator ────────────────────────────────────────────────────────
+  simulator:
+    build:
+      context: ./simulators
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *kafka-env
+      NUM_MACHINES: "10"    # machines per replica
+      SEND_INTERVAL_SEC: "2"
+      MACHINE_PREFIX: "MC"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    build:
+      context: ./grafana
+      dockerfile: Dockerfile
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: "apache-iotdb-datasource"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      iotdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  iotdb-data:
+  iotdb-logs:
+  grafana-data:
+  flink-checkpoints:
+  flink-savepoints:
+
+# ─── Network ──────────────────────────────────────────────────────────────────
+networks:
+  default:
+    name: data-pipeline-net
+    driver: bridge

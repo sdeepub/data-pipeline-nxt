@@ -1,0 +1,56 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flink-job-submit
+  namespace: data-pipeline
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-jobmanager
+          image: busybox:1.35
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z flink-jobmanager 8081; do
+                echo "Waiting for JobManager..."; sleep 3;
+              done
+              echo "JobManager ready — waiting 15s for TaskManagers to register..."
+              sleep 15
+      containers:
+        - name: flink-job-submit
+          image: flink-pipeline:latest
+          imagePullPolicy: Never
+          command: ["flink","run","-m","flink-jobmanager:8081","-py","/opt/flink/usrlib/pipeline_job.py"]
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka-broker:29092"
+            - name: KAFKA_TOPIC
+              value: "sensor-topic"
+            - name: KAFKA_DEAD_LETTER_TOPIC
+              value: "sensor-topic-dlq"
+            - name: KAFKA_GROUP_ID
+              value: "flink-pipeline"
+            - name: IOTDB_HOST
+              value: "iotdb"
+            - name: IOTDB_PORT
+              value: "6667"
+            - name: IOTDB_USER
+              value: "root"
+            - name: IOTDB_PASSWORD
+              value: "root"
+            - name: IOTDB_STORAGE_GROUP
+              value: "root.factory1"
+            - name: CHECKPOINT_DIR
+              value: "/flink-checkpoints"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
