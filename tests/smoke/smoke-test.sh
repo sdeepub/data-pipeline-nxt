@@ -4,7 +4,7 @@
 # Usage: ./smoke-test.sh or tests/smoke/smoke-test.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
-set -e
+set -eo pipefail
 
 echo "================================================================================"
 echo "Data Pipeline NxT - Smoke Test"
@@ -87,8 +87,8 @@ if ! docker compose ps > /dev/null 2>&1; then
     exit 1
 fi
 
-RUNNING=$(docker compose ps --services --filter "status=running" | wc -l)
-TOTAL=$(docker compose ps --services | wc -l)
+RUNNING=$(docker compose ps --status running --format json | jq -s length)
+TOTAL=$(docker compose ps --format json | jq -s length)
 
 log_info "Services running: $RUNNING / $TOTAL"
 docker compose ps --format "table {{.Service}}\t{{.Status}}"
@@ -188,61 +188,72 @@ log_info "Task managers available: $PARALLELISM"
 
 log_step "TEST 5: IoTDB Data Verification"
 
+IOTDB_CLI="/iotdb/sbin/start-cli.sh"
+
 log_info "Checking IoTDB connectivity..."
-docker exec iotdb iotdb-sql.sh -h 127.0.0.1 -p 6667 -u root -pw root \
-    -e "SHOW DATABASES;" 2>/dev/null > /tmp/iotdb_test.txt && \
-    log_info "✓ IoTDB is responsive" || log_warn "⚠ IoTDB query failed"
 
-log_info "Querying for sensor data (waiting up to 60s)..."
-RECORD_COUNT=0
-for i in {1..30}; do
-    # Query IoTDB and extract record count
-    QUERY_RESULT=$(docker exec iotdb iotdb-sql.sh -h 127.0.0.1 -p 6667 -u root -pw root \
-        -e "SELECT COUNT(*) FROM root.factory1.** WHERE TIME > 0;" 2>/dev/null || echo "")
-    
-    # Parse the count from the result (look for the first number before a pipe)
-    RECORD_COUNT=$(echo "$QUERY_RESULT" | grep -oE '^[[:space:]]*[0-9]+' | head -1 | xargs 2>/dev/null || echo "0")
-    
-    if [ ! -z "$RECORD_COUNT" ] && [ "$RECORD_COUNT" != "0" ]; then
-        log_info "✓ Found $RECORD_COUNT record(s) in IoTDB"
-        
-        log_info "Latest temperature data sample:"
-        docker exec iotdb iotdb-sql.sh -h 127.0.0.1 -p 6667 -u root -pw root \
-            -e "SELECT gas_temperature FROM root.factory1.** LIMIT 5;" 2>/dev/null | head -10
-        break
-    fi
-    echo -n "."
-    sleep 2
-done
+if docker exec iotdb $IOTDB_CLI \
+    -h 127.0.0.1 \
+    -p 6667 \
+    -u root \
+    -pw root \
+    -e "SHOW DATABASES;" >/dev/null 2>&1; then
 
-if [ -z "$RECORD_COUNT" ] || [ "$RECORD_COUNT" = "0" ]; then
-    log_warn "⚠ No data found in IoTDB yet (pipeline may still be processing)"
+    log_info "✓ IoTDB is responsive"
+
+else
+
+    log_warn "⚠ IoTDB query failed"
     RECORD_COUNT=0
+
+fi
+
+log_info "Checking latest measurement from root.factory1.MC001..."
+
+LAST_RESULT=$(docker exec iotdb $IOTDB_CLI \
+    -h 127.0.0.1 \
+    -p 6667 \
+    -u root \
+    -pw root \
+    -e "SELECT LAST gas_temperature FROM root.factory1.MC001;" \
+    2>/dev/null)
+
+echo "$LAST_RESULT"
+
+if echo "$LAST_RESULT" | grep -q "root.factory1.MC001.gas_temperature"; then
+
+    log_info "✓ Data exists in IoTDB"
+    RECORD_COUNT=1
+
+else
+
+    log_warn "⚠ No measurement found"
+    RECORD_COUNT=0
+
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TEST 6: End-to-End Latency (if data exists)
+# TEST 6: End-to-End Latency (Optional)
 # ─────────────────────────────────────────────────────────────────────────────
 
 log_step "TEST 6: End-to-End Latency (Optional)"
 
 if [ "$RECORD_COUNT" -gt 0 ]; then
-    log_info "Measuring latency from Kafka → IoTDB..."
-    
-    # Get current time in milliseconds
-    CURRENT_TIME_MS=$(date +%s%3N)
-    
-    # Get latest data timestamp from IoTDB
-    LATEST_TIMESTAMP=$(docker exec iotdb iotdb-sql.sh -h 127.0.0.1 -p 6667 -u root -pw root \
-        -e "SELECT * FROM root.factory1.MC001 LIMIT 1;" 2>/dev/null | \
-        grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1 2>/dev/null || echo "")
-    
-    if [ ! -z "$LATEST_TIMESTAMP" ]; then
-        # Convert ISO timestamp to milliseconds (simplified)
-        log_info "✓ Latest event timestamp: $LATEST_TIMESTAMP"
-    fi
+
+    log_info "Latest measurement in IoTDB:"
+
+    docker exec iotdb $IOTDB_CLI \
+        -h 127.0.0.1 \
+        -p 6667 \
+        -u root \
+        -pw root \
+        -e "SELECT LAST gas_temperature FROM root.factory1.MC001;" \
+        2>/dev/null
+
 else
+
     log_warn "⚠ Skipping latency test (no data in IoTDB yet)"
+
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,14 +270,14 @@ ERRORS_FOUND=0
 if docker compose logs flink-jobmanager 2>/dev/null | grep -i "exception\|error" | grep -v "WARN" > /dev/null 2>&1; then
     log_warn "⚠ Errors found in Flink JobManager logs"
     docker compose logs flink-jobmanager 2>/dev/null | grep -i "exception\|error" | grep -v "WARN" | head -3
-    ERRORS_FOUND=$((ERRORS_FOUND + 1))
+    ((ERRORS_FOUND++))
 fi
 
 # Check simulator logs
 if docker compose logs simulator 2>/dev/null | grep -i "exception\|error" | grep -v "WARN" > /dev/null 2>&1; then
     log_warn "⚠ Errors found in Simulator logs"
     docker compose logs simulator 2>/dev/null | grep -i "exception\|error" | grep -v "WARN" | head -3
-    ERRORS_FOUND=$((ERRORS_FOUND + 1))
+    ((ERRORS_FOUND++))
 fi
 
 if [ $ERRORS_FOUND -eq 0 ]; then
@@ -284,7 +295,7 @@ TESTS_TOTAL=7
 
 # Test 1: Flink job running
 if [ "$JOBS" -gt 0 ] 2>/dev/null; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 1: Flink job is running"
 else
     log_warn "✗ TEST 1: Flink job not running"
@@ -292,7 +303,7 @@ fi
 
 # Test 2: Kafka has messages
 if [ "$MESSAGE_COUNT" -gt 0 ]; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 2: Kafka has messages"
 else
     log_warn "✗ TEST 2: Kafka has no messages"
@@ -300,7 +311,7 @@ fi
 
 # Test 3: IoTDB has data
 if [ "$RECORD_COUNT" -gt 0 ]; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 3: IoTDB has data ($RECORD_COUNT records)"
 else
     log_warn "✗ TEST 3: IoTDB has no data"
@@ -308,25 +319,25 @@ fi
 
 # Test 4: No critical errors
 if [ $ERRORS_FOUND -eq 0 ]; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 4: No critical errors"
 fi
 
 # Test 5: Zookeeper healthy
 if echo "ruok" | nc localhost 2181 > /dev/null 2>&1; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 5: Zookeeper healthy"
 fi
 
 # Test 6: Kafka healthy
 if docker exec kafka kafka-topics --bootstrap-server localhost:29092 --list > /dev/null 2>&1; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 6: Kafka healthy"
 fi
 
 # Test 7: IoTDB healthy
 if curl -s http://localhost:8080/ping > /dev/null 2>&1; then
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
     log_info "✓ TEST 7: IoTDB healthy"
 fi
 
@@ -342,7 +353,7 @@ if [ $TESTS_PASSED -ge 6 ]; then
     log_info ""
     log_info "Next steps:"
     log_info "  1. View Grafana dashboard: http://localhost:3000 (admin/admin)"
-    log_info "  2. Query IoTDB directly: docker exec iotdb iotdb-sql.sh -h 127.0.0.1 -p 6667 -u root -pw root"
+    log_info "  2. Query IoTDB directly: docker exec iotdb /iotdb/sbin/start-cli.sh -h 127.0.0.1 -p 6667 -u root -pw root"
     log_info "  3. Check Flink UI: http://localhost:8081"
     log_info ""
     exit 0
