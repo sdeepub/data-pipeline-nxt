@@ -1,5 +1,5 @@
 # ─── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM maven:3.9-eclipse-temurin-11 AS builder
+FROM maven:3.9-eclipse-temurin-17 AS builder
 
 WORKDIR /build
 
@@ -23,7 +23,7 @@ RUN echo "[Builder] Compiling and packaging Java project..." && \
     (echo "[Builder] ERROR: kafka-iotdb-pipeline.jar not found!" && exit 1)
 
 # ─── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM flink:1.17.2-scala_2.12-java11
+FROM flink:1.18.1-scala_2.12-java17
 
 LABEL maintainer="data-pipeline" \
       description="Flink Kafka → IoTDB pipeline (Java)" \

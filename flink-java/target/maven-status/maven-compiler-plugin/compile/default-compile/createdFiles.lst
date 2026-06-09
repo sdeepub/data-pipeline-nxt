@@ -1,0 +1,17 @@
+com/iotdb/flink/dlq/DLQHandler$DLQMessage.class
+com/iotdb/flink/manifest/Manifest.class
+com/iotdb/flink/manifest/Manifest$KPIVRule.class
+com/iotdb/flink/KafkaToIoTDB$1.class
+com/iotdb/flink/manifest/Manifest$WindowSpec.class
+com/iotdb/flink/KafkaToIoTDB$2.class
+com/iotdb/flink/KafkaToIoTDB.class
+com/iotdb/flink/SensorData.class
+com/iotdb/flink/manifest/ManifestValidator$ValidationResult.class
+com/iotdb/flink/manifest/Manifest$EdgeTrimming.class
+com/iotdb/flink/dlq/DLQHandler.class
+com/iotdb/flink/manifest/Manifest$Measurement.class
+com/iotdb/flink/manifest/ManifestValidator.class
+com/iotdb/flink/dlq/DLQHandler$DLQSerializationSchema.class
+com/iotdb/flink/dlq/TelemetryParserWithDLQ.class
+com/iotdb/flink/dlq/DLQWrapper.class
+com/iotdb/flink/manifest/Manifest$Defaults.class

@@ -111,10 +111,9 @@ services:
         jobmanager.rpc.address: flink-jobmanager
         parallelism.default: 4
         rest.bind-address: 0.0.0.0
-        state.backend: hashmap
+        state.backend.type: hashmap
         state.checkpoints.dir: file:///tmp/flink-checkpoints
         state.savepoints.dir: file:///tmp/flink-savepoints
-        execution.checkpointing.interval: 60s
     depends_on:
       kafka:
         condition: service_healthy
@@ -147,7 +146,7 @@ services:
         parallelism.default: 4
         taskmanager.numberOfTaskSlots: 4
         taskmanager.memory.process.size: 1024m
-        state.backend: hashmap
+        state.backend.type: hashmap
         state.checkpoints.dir: file:///tmp/flink-checkpoints
         state.savepoints.dir: file:///tmp/flink-savepoints
     depends_on:
