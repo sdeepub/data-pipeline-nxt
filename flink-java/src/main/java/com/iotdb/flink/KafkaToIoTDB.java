@@ -10,6 +10,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 
+import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.runtime.state.storage.FileSystemCheckpointStorage;
 
@@ -35,7 +36,7 @@ public class KafkaToIoTDB {
         final StreamExecutionEnvironment env =
                 StreamExecutionEnvironment.getExecutionEnvironment();
 
-        env.setParallelism(1);
+        env.setParallelism(4);
 
 	//Checkpoint every 30 seconds
 	env.enableCheckpointing(30000);
@@ -51,6 +52,13 @@ public class KafkaToIoTDB {
 
 	env.getCheckpointConfig()
 	    .setMaxConcurrentCheckpoints(1);
+
+		// SAVEPOINT SUPPORT: Retain externalized checkpoints for manual savepoints
+        env.getCheckpointConfig().enableExternalizedCheckpoints(
+	       CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+ 
+        // SAVEPOINT STORAGE: Specify directory for recovery on restart
+        env.getCheckpointConfig().setCheckpointStorage("file:///tmp/flink-checkpoints");
 
         // ------------------------------------------------------------
         // Kafka Configuration
