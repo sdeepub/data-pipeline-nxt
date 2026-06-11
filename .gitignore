@@ -4,6 +4,13 @@ grafana-storage/
 kafka-data/
 zookeeper-data/
 
+# Flink data
+flink-data/checkpoints
+flink-data/saveponits
+
+# Future Features
+future-features
+
 # Minikube
 .minikube/
 

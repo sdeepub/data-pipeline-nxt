@@ -103,8 +103,8 @@ services:
       - "8081:8081"   # Flink Web UI
       - "6123:6123"   # RPC
     volumes:
-      - /tmp/flink-checkpoints:/tmp/flink-checkpoints
-      - /tmp/flink-savepoints:/tmp/flink-savepoints
+      - ./flink-data/checkpoints:/tmp/flink-checkpoints
+      - ./flink-data/savepoints:/tmp/flink-savepoints
     environment:
       <<: [*kafka-env, *iotdb-env]
       FLINK_PROPERTIES: |
@@ -137,8 +137,8 @@ services:
     restart: unless-stopped
     command: taskmanager
     volumes:
-      - /tmp/flink-checkpoints:/tmp/flink-checkpoints
-      - /tmp/flink-savepoints:/tmp/flink-savepoints
+      - ./flink-data/checkpoints:/tmp/flink-checkpoints
+      - ./flink-data/savepoints:/tmp/flink-savepoints
     environment:
       <<: [*kafka-env, *iotdb-env]
       FLINK_PROPERTIES: |
@@ -188,8 +188,8 @@ services:
         echo "ERROR: JobManager never became healthy!"
         exit 1
     volumes:
-      - /tmp/flink-checkpoints:/tmp/flink-checkpoints
-      - /tmp/flink-savepoints:/tmp/flink-savepoints
+      - ./flink-data/checkpoints:/tmp/flink-checkpoints
+      - ./flink-data/savepoints:/tmp/flink-savepoints
     environment:
       <<: [*kafka-env, *iotdb-env]
     depends_on:
